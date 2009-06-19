@@ -3,6 +3,8 @@
 
 #include <linux/init.h>
 
+#define CACHELINE_SZC #32
+
 #ifndef CONFIG_CPU_ARM926T
 #error CPU not supported
 #endif
@@ -60,11 +62,11 @@ warm_cop_drain_wb:
 #define WARM_COP_MK_RANGE_FUNC(name,f1,f2)	\
 .global name					;\
 name:						;\
-    bic    r0, r0, #32-1			;\
+    bic    r0, r0, CACHELINE_SZC-1		;\
 0:  f1						;\
     f2						;\
-    add    r0, r0, #32				;\
-    subs   r1, r1, #32				;\
+    add    r0, r0, CACHELINE_SZC		;\
+    subs   r1, r1, CACHELINE_SZC		;\
     bgt    0b					;\
     bx     lr
 

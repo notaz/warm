@@ -14,8 +14,18 @@
 #include <linux/proc_fs.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
-#include <linux/uaccess.h>
 #include <linux/seq_file.h>
+
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
+#include <linux/uaccess.h>
+#else
+#include <linux/init.h>
+#include <linux/moduleparam.h>
+#include <asm/uaccess.h>
+#define __user
+#define unlocked_ioctl ioctl
+#endif
 
 #define WARM_CODE
 #include "../warm.h"
@@ -25,8 +35,12 @@
 #error need proc_fs
 #endif
 	
-#define WARM_VER "r1"
+#define WARM_VER "r2"
 #define PFX "wARM: "
+
+#define WARM_INFO(fmt, ...) \
+	if (verbose) \
+		pr_info(PFX fmt, ##__VA_ARGS__)
 
 #define MAX_CACHEOP_RANGE	16384
 
@@ -34,11 +48,22 @@
 #define RAM_PHYS_START	0
 #define RAM_MAX_SIZE	0x10000000	/* 256M, try to be future proof */
 
+/* expected CPU id */
+#if   defined(CONFIG_CPU_ARM926T)
+#define EXPECTED_ID	0x069260
+#elif defined(CONFIG_CPU_ARM920T)
+#define EXPECTED_ID	0x029200
+#else
+#error "unsupported CPU"
+#endif
+
 extern unsigned long max_mapnr;
 
 /* "upper" physical memory, not seen by Linux and to be mmap'ed */
 static u32 uppermem_start;
 static u32 uppermem_end;
+
+static int verbose;
 
 static u32 *get_pgtable(void)
 {
@@ -68,8 +93,8 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 
 	for (i = 0; i < 4096; i++)
 	{
-		if (!(pgtable[i] & 1))
-			/* must be course of fine page table */
+		if ((pgtable[i] & 3) != 1)
+			/* must be coarse page table */
 			continue;
 
 		cpt = __va(pgtable[i] & 0xfffffc00);
@@ -110,7 +135,7 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 	warm_cop_clean_d();
 	warm_drain_wb_inval_tlb();
 
-	pr_info(PFX "%c%c bit(s) %s for phys %08x-%08x (%d pages)\n",
+	WARM_INFO("%c%c bit(s) %s for phys %08x-%08x (%d pages)\n",
 		bits & 8 ? 'c' : ' ', bits & 4 ? 'b' : ' ',
 		is_set ? "set" : "cleared",
 		uppermem_start, uppermem_end - 1, count);
@@ -130,7 +155,7 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 	if (in_cb & WCB_B_BIT)
 		bits |= 4;
 
-	size += addr & ~(PAGE_SIZE - 1);
+	size += addr & (PAGE_SIZE - 1);
 	size = ALIGN(size, PAGE_SIZE);
 
 	addr &= ~(PAGE_SIZE - 1);
@@ -143,8 +168,10 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 	{
 		desc1 = pgtable[addr >> 20];
 
-		if (!(desc1 & 3))
+		if ((desc1 & 3) != 1) {
+			printk(KERN_WARNING PFX "not coarse table? %08x %08x\n", desc1, addr);
 			return -EINVAL;
+		}
 
 		cpt = __va(desc1 & 0xfffffc00);
 		desc2 = cpt[(addr >> 12) & 0xff];
@@ -167,7 +194,7 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 	warm_cop_clean_d();
 	warm_drain_wb_inval_tlb();
 
-	pr_info(PFX "%c%c bit(s) %s virt %08x-%08x (%d pages)\n",
+	WARM_INFO("%c%c bit(s) %s virt %08x-%08x (%d pages)\n",
 		bits & 8 ? 'c' : ' ', bits & 4 ? 'b' : ' ',
 		is_set ? "set" : "cleared", start, end - 1, count);
 
@@ -183,24 +210,36 @@ static int do_virt2phys(unsigned long *_addr)
 	pgtable = get_pgtable();
 	desc1 = pgtable[addr >> 20];
 
-	if (!(desc1 & 3))
-		return -EINVAL;
-	
-	if ((desc1 & 3) == 2) {
-		/* 1MB section */
+	switch (desc1 & 3) {
+	case 1:	/* coarse table */
+		cpt = __va(desc1 & 0xfffffc00);
+		desc2 = cpt[(addr >> 12) & 0xff];
+		break;
+	case 2: /* 1MB section */
 		*_addr = (desc1 & 0xfff00000) | (addr & 0xfffff);
 		return 0;
+	case 3:	/* fine table */
+		cpt = __va(desc1 & 0xfffff000);
+		desc2 = cpt[(addr >> 10) & 0x3ff];
+	default:
+		return -EINVAL;
 	}
 	
-	cpt = __va(desc1 & 0xfffffc00);
-	desc2 = cpt[(addr >> 12) & 0xff];
 	
-	if ((desc2 & 3) != 2) {
-		printk(KERN_WARNING PFX "not small page? %08x %08x\n", desc2, addr);
+	switch (desc2 & 3) {
+	case 1:	/* large page */
+		*_addr = (desc2 & 0xffff0000) | (addr & 0xffff);
+		break;
+	case 2:	/* small page */
+		*_addr = (desc2 & 0xfffff000) | (addr & 0x0fff);
+		break;
+	case 3:	/* tiny page */
+		*_addr = (desc2 & 0xfffffc00) | (addr & 0x03ff);
+		break;
+	default:
 		return -EINVAL;
 	}
 
-	*_addr = (desc2 & 0xfffffc00) | (addr & 0x3ff);
 	return 0;
 }
 
@@ -262,7 +301,12 @@ static int do_cache_ops(int ops, u32 addr, u32 size)
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
 static long warm_ioctl(struct file *file, unsigned int cmd, unsigned long __arg)
+#else
+static int warm_ioctl(struct inode *inode, struct file *file,
+			unsigned int cmd, unsigned long __arg)
+#endif
 {
 	void __user *arg = (void __user *) __arg;
 	union {
@@ -278,7 +322,8 @@ static long warm_ioctl(struct file *file, unsigned int cmd, unsigned long __arg)
 			return -EFAULT;
 		if (u.wcop.ops & ~(WOP_D_CLEAN|WOP_D_INVALIDATE|WOP_I_INVALIDATE))
 			return -EINVAL;
-		if (u.wcop.size > MAX_CACHEOP_RANGE)
+		if (u.wcop.size == (unsigned long)-1 ||
+				(u.wcop.size > MAX_CACHEOP_RANGE && !(u.wcop.ops & WOP_D_INVALIDATE)))
 			ret = do_cache_ops_whole(u.wcop.ops);
 		else
 			ret = do_cache_ops(u.wcop.ops, u.wcop.addr, u.wcop.size);
@@ -444,6 +489,13 @@ static const struct file_operations warm_fops = {
 static int __init warm_module_init(void)
 {
 	struct proc_dir_entry *pret;
+	u32 cpuid;
+
+	asm ("mrc p15, 0, %0, c0, c0, 0" : "=r"(cpuid));
+	if ((cpuid & 0x0ffff0) != EXPECTED_ID) {
+		printk(KERN_ERR PFX "module was compiled for different CPU, aborting\n");
+		return -1;
+	}
 
 	pret = create_proc_entry("warm", S_IWUGO | S_IRUGO, NULL);
 	if (!pret) {
@@ -479,6 +531,8 @@ static void __exit warm_module_exit(void)
 
 module_init(warm_module_init);
 module_exit(warm_module_exit);
+
+module_param(verbose, int, 0644);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ARM processor services");

@@ -55,7 +55,7 @@ int warm_init(void)
 
 	memset(&unm, 0, sizeof(unm));
 	uname(&unm);
-	snprintf(buff, sizeof(buff), "/sbin/insmod warm_%s.ko", unm.release);
+	snprintf(buff, sizeof(buff), "/sbin/insmod warm_%s.ko verbose=1", unm.release);
 
 	/* try to insmod */
 	system(buff);
