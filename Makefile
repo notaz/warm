@@ -1,6 +1,6 @@
 CC = $(CROSS_COMPILE)gcc
 AR = $(CROSS_COMPILE)ar
-CFLAGS += -Wall
+CFLAGS += -Wall -O2
 
 WARM_A = libwarm.a
 WARM_SO = libwarm.so
