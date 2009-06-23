@@ -149,14 +149,16 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 	u32 desc1, desc2;
 	u32 *pgtable, *cpt;
 	u32 start, end;
+	u32 mask;
 
 	if (in_cb & WCB_C_BIT)
 		bits |= 8;
 	if (in_cb & WCB_B_BIT)
 		bits |= 4;
 
-	size += addr & (PAGE_SIZE - 1);
-	size = ALIGN(size, PAGE_SIZE);
+	mask = PAGE_SIZE - 1;
+	size += addr & mask;
+	size = (size + mask) & ~mask;
 
 	addr &= ~(PAGE_SIZE - 1);
 	start = addr;
@@ -221,6 +223,7 @@ static int do_virt2phys(unsigned long *_addr)
 	case 3:	/* fine table */
 		cpt = __va(desc1 & 0xfffff000);
 		desc2 = cpt[(addr >> 10) & 0x3ff];
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -228,13 +231,13 @@ static int do_virt2phys(unsigned long *_addr)
 	
 	switch (desc2 & 3) {
 	case 1:	/* large page */
-		*_addr = (desc2 & 0xffff0000) | (addr & 0xffff);
+		*_addr = (desc2 & ~0xffff) | (addr & 0xffff);
 		break;
 	case 2:	/* small page */
-		*_addr = (desc2 & 0xfffff000) | (addr & 0x0fff);
+		*_addr = (desc2 & ~0x0fff) | (addr & 0x0fff);
 		break;
 	case 3:	/* tiny page */
-		*_addr = (desc2 & 0xfffffc00) | (addr & 0x03ff);
+		*_addr = (desc2 & ~0x03ff) | (addr & 0x03ff);
 		break;
 	default:
 		return -EINVAL;

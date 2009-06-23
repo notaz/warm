@@ -4,7 +4,8 @@ endif
 
 CROSS_COMPILE = arm-linux-
 INCLUDE  = $(KERNEL_DIR)/include
-CPPFLAGS = -O2 -DMODULE -D__KERNEL__ -I${INCLUDE}
+CPPFLAGS = -Wall -O2 -DMODULE -D__KERNEL__ -msoft-float -nostdinc -isystem ${INCLUDE}
+CPPFLAGS+= -isystem $(shell $(CC) -print-file-name=include)
 CC       = $(CROSS_COMPILE)gcc
 LD       = $(CROSS_COMPILE)ld
 

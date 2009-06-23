@@ -1,11 +1,20 @@
-/* vim:filetype=armasm
-*/
+/*
+ * Cache operations
+ *
+ * Author: Gražvydas "notaz" Ignotas
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
 
-#include <linux/init.h>
+#ifndef AUTOCONF_INCLUDED
+#include <linux/config.h>
+#endif
 
 #define CACHELINE_SZC #32
 
-#ifndef CONFIG_CPU_ARM926T
+#if !defined(CONFIG_CPU_ARM926T) && !defined(CONFIG_CPU_ARM920T)
 #error CPU not supported
 #endif
 
@@ -13,18 +22,41 @@
 .align 2
 
 .global warm_cop_clean_inval_d
+.global warm_cop_clean_d
+
+#ifdef CONFIG_CPU_ARM926T
+
 warm_cop_clean_inval_d:
 0:  mrc    p15, 0, r15, c7, c14, 3	@ test, clean and invalidate
     bne    0b
     bx     lr
 
-
-.global warm_cop_clean_d
 warm_cop_clean_d:
 0:  mrc    p15, 0, r15, c7, c10, 3	@ test and clean
     bne    0b
     bx     lr
 
+#else
+
+/* comes from Linux kernel code */
+.macro warm_cop_wholecache_dop crm
+    mov    r1,     #0x000000e0		@ 8 segments
+1:  orr    r3, r1, #0xfc000000		@ 64 entries
+2:  mcr    p15, 0, r3, c7, \crm, 2	@ D index op
+    subs   r3, r3, #1<<26
+    bcs    2b				@ entries 63 to 0
+    subs   r1, r1, #1<<5
+    bcs    1b				@ segments 7 to 0
+    bx     lr
+.endm
+
+warm_cop_clean_inval_d:
+    warm_cop_wholecache_dop c14
+
+warm_cop_clean_d:
+    warm_cop_wholecache_dop c10
+
+#endif
 
 .global warm_cop_inval_d
 warm_cop_inval_d:
@@ -85,4 +117,7 @@ warm_drain_wb_inval_tlb:
     mcr    p15, 0, r0, c7, c10, 4
     mcr    p15, 0, r0, c8, c7, 0
     bx     lr
+
+
+@ vim:filetype=armasm
 

@@ -149,15 +149,15 @@ void coherency_test(void)
 {
 	volatile unsigned char *buff_mapped;
 	volatile unsigned char *buff_vol;
-	unsigned long buff_phys, align;
-	unsigned char buff_mapped_vals[5];
+	unsigned long buff_phys, mapped_phys, align;
+	unsigned char buff_mapped_vals[6];
 	unsigned char buff_vals[5];
 	int random_offs;
 	int memdev;
 
 	srand(time(NULL));
 
-	buff_phys = warm_virt2phys(buff);
+	buff_phys = warm_virt2phys(buff_mid);
 	align = buff_phys & 0xfff;
 
 	memdev = open("/dev/mem", O_RDONLY | O_SYNC);
@@ -166,7 +166,9 @@ void coherency_test(void)
 		return;
 	}
 
-	/* the mapping is valid for 1 page only. */
+	/* the mapping is valid for 1 page only.
+	 * Also it doesn't work for GP2X F100 (2.4 kernels?),
+	 * only upper mem maps correctly there. */
 	buff_mapped = mmap(NULL, 0x1000, PROT_READ,
 			MAP_SHARED, memdev, buff_phys & ~0xfff);
 	if (buff_mapped == MAP_FAILED) {
@@ -175,9 +177,14 @@ void coherency_test(void)
 	}
 	buff_mapped += align;
 
+	buff_mapped_vals[5] = buff_mapped[0];	/* touch */
+	mapped_phys = warm_virt2phys((void *)buff_mapped);
+	if (buff_phys != mapped_phys)
+		printf("warning: mmap requested %08lx, got %08lx\n", buff_phys, mapped_phys);
+
 	random_offs = rand() % (0x1000 - align);
 
-	buff_vol = (volatile void *)buff;
+	buff_vol = (volatile void *)buff_mid;
 	buff_vals[0] = buff_vol[random_offs]; buff_mapped_vals[0] = buff_mapped[random_offs];
 
 	/* incremented: */
