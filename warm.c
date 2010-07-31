@@ -50,6 +50,7 @@ extern long delete_module(const char *, unsigned int);
 
 static int warm_fd = -1;
 static int kernel_version;
+static int module_inserted;
 
 static void sys_cacheflush(void *start, void *end)
 {
@@ -145,6 +146,8 @@ int warm_init(void)
 				fprintf(stderr, PFX "manual insmod also failed: %d\n", ret);
 		}
 	}
+	if (ret == 0)
+		module_inserted = 1;
 
 	warm_fd = open("/proc/warm", O_RDWR);
 	if (warm_fd >= 0)
@@ -166,20 +169,22 @@ void warm_finish(void)
 	close(warm_fd);
 	warm_fd = -1;
 
-	if (kernel_version < 0x26) {
-		struct utsname unm;
-		memset(&unm, 0, sizeof(unm));
-		uname(&unm);
-		snprintf(name, sizeof(name), "warm_%s", unm.release);
-	}
-	else
-		strcpy(name, "warm");
+	if (module_inserted) {
+		if (kernel_version < 0x26) {
+			struct utsname unm;
+			memset(&unm, 0, sizeof(unm));
+			uname(&unm);
+			snprintf(name, sizeof(name), "warm_%s", unm.release);
+		}
+		else
+			strcpy(name, "warm");
 
-	snprintf(cmd, sizeof(cmd), "/sbin/rmmod %s", name);
-	ret = system(cmd);
-	if (ret != 0) {
-		fprintf(stderr, PFX "system/rmmod failed: %d %d\n", ret, errno);
-		manual_rmmod(name);
+		snprintf(cmd, sizeof(cmd), "/sbin/rmmod %s", name);
+		ret = system(cmd);
+		if (ret != 0) {
+			fprintf(stderr, PFX "system/rmmod failed: %d %d\n", ret, errno);
+			manual_rmmod(name);
+		}
 	}
 }
 
