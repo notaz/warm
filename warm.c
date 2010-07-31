@@ -42,6 +42,8 @@
 #define WARM_CODE
 #include "warm.h"
 
+#define PFX "wARM: "
+
 /* provided by glibc */
 extern long init_module(void *, unsigned long, const char *);
 extern long delete_module(const char *, unsigned int);
@@ -93,7 +95,7 @@ static int manual_insmod_26(const char *fname, const char *opts)
 
 	read_len = fread(buff, 1, len, f);
 	if (read_len != len) {
-		fprintf(stderr, "failed to read module\n");
+		fprintf(stderr, PFX "failed to read module\n");
 		goto fail1;
 	}
 
@@ -121,7 +123,7 @@ int warm_init(void)
 	uname(&unm);
 
 	if (strlen(unm.release) < 3 || unm.release[1] != '.') {
-		fprintf(stderr, "unexpected version string: %s\n", unm.release);
+		fprintf(stderr, PFX "unexpected version string: %s\n", unm.release);
 		goto fail;
 	}
 	kernel_version = ((unm.release[0] - '0') << 4) | (unm.release[2] - '0');
@@ -136,11 +138,11 @@ int warm_init(void)
 	/* try to insmod */
 	ret = system(buff2);
 	if (ret != 0) {
-		fprintf(stderr, "system/insmod failed: %d %d\n", ret, errno);
+		fprintf(stderr, PFX "system/insmod failed: %d %d\n", ret, errno);
 		if (kernel_version >= 0x26) {
 			ret = manual_insmod_26(buff1, "verbose=1");
 			if (ret != 0)
-				fprintf(stderr, "manual insmod also failed: %d\n", ret);
+				fprintf(stderr, PFX "manual insmod also failed: %d\n", ret);
 		}
 	}
 
@@ -149,7 +151,7 @@ int warm_init(void)
 		return 0;
 
 fail:
-	fprintf(stderr, "wARM: can't init, acting as sys_cacheflush wrapper\n");
+	fprintf(stderr, PFX "can't init, acting as sys_cacheflush wrapper\n");
 	return -1;
 }
 
@@ -176,7 +178,7 @@ void warm_finish(void)
 	snprintf(cmd, sizeof(cmd), "/sbin/rmmod %s", name);
 	ret = system(cmd);
 	if (ret != 0) {
-		fprintf(stderr, "system/rmmod failed: %d %d\n", ret, errno);
+		fprintf(stderr, PFX "system/rmmod failed: %d %d\n", ret, errno);
 		manual_rmmod(name);
 	}
 }
