@@ -35,7 +35,7 @@
 #error need proc_fs
 #endif
 	
-#define WARM_VER "r2"
+#define WARM_VER "r3"
 #define PFX "wARM: "
 
 #define WARM_INFO(fmt, ...) \
