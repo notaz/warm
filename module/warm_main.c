@@ -63,6 +63,7 @@ extern unsigned long max_mapnr;
 /* "upper" physical memory, not seen by Linux and to be mmap'ed */
 static u32 uppermem_start;
 static u32 uppermem_end;
+static spinlock_t lock;
 
 static int verbose;
 
@@ -78,6 +79,7 @@ static u32 *get_pgtable(void)
 
 static int do_set_cb_uppermem(int in_cb, int is_set)
 {
+	unsigned long flags;
 	u32 *pgtable, *cpt;
 	int i, j, count = 0;
 	int bits = 0;
@@ -89,6 +91,8 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 		bits |= 8;
 	if (in_cb & WCB_B_BIT)
 		bits |= 4;
+
+	spin_lock_irqsave(&lock, flags);
 
 	pgtable = get_pgtable();
 
@@ -136,6 +140,8 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 	warm_cop_clean_d();
 	warm_drain_wb_inval_tlb();
 
+	spin_unlock_irqrestore(&lock, flags);
+
 	WARM_INFO("%c%c bit(s) %s for phys %08x-%08x (%d pages)\n",
 		bits & 8 ? 'c' : ' ', bits & 4 ? 'b' : ' ',
 		is_set ? "set" : "cleared",
@@ -147,6 +153,7 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 {
 	int count = 0, bits = 0;
+	unsigned long flags;
 	u32 desc1, desc2 = 0;
 	u32 *pgtable, *cpt = NULL;
 	u32 start, end;
@@ -165,6 +172,8 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 	start = addr;
 	end = addr + size;
 
+	spin_lock_irqsave(&lock, flags);
+
 	pgtable = get_pgtable();
 
 	while (addr < end)
@@ -173,6 +182,7 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 
 		switch (desc1 & 3) {
 		case 0:
+			spin_unlock_irqrestore(&lock, flags);
 			printk(KERN_WARNING PFX "address %08x not mapped.\n", addr);
 			return -EINVAL;
 		case 1:
@@ -196,8 +206,8 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 			break;
 		}
 
-		
 		if ((desc2 & 3) == 0) {
+			spin_unlock_irqrestore(&lock, flags);
 			printk(KERN_WARNING PFX "address %08x not mapped (%08x)\n",
 				addr, desc2);
 			return -EINVAL;
@@ -229,6 +239,8 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 
 	warm_cop_clean_d();
 	warm_drain_wb_inval_tlb();
+
+	spin_unlock_irqrestore(&lock, flags);
 
 	WARM_INFO("%c%c bit(s) %s virt %08x-%08x (%d pages)\n",
 		bits & 8 ? 'c' : ' ', bits & 4 ? 'b' : ' ',
@@ -340,6 +352,7 @@ static int do_cache_ops(int ops, u32 addr, u32 size)
 static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
 {
 	int count = 0, retval = 0;
+	unsigned long flags;
 	u32 pstart, start, end;
 	u32 desc1, apcb_bits;
 	u32 *pgtable;
@@ -350,7 +363,6 @@ static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
 		apcb_bits |= 8;
 	if (cb & WCB_B_BIT)
 		apcb_bits |= 4;
-	// spinlock
 
 	mask = SECTION_SIZE - 1;
 	size = (size + mask) & ~mask;
@@ -365,6 +377,8 @@ static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
 	if (pstart + size - 1 < pstart)
 		return -EINVAL;
 
+	spin_lock_irqsave(&lock, flags);
+
 	pgtable = get_pgtable();
 
 	for (; vaddr < end; vaddr += SECTION_SIZE, paddr += SECTION_SIZE)
@@ -373,6 +387,7 @@ static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
 
 		if (is_unmap) {
 			if ((desc1 & 3) != 2) {
+				spin_unlock_irqrestore(&lock, flags);
 				printk(KERN_WARNING PFX "vaddr %08x is not a section? (%08x)\n",
 						vaddr, desc1);
 				return -EINVAL;
@@ -402,6 +417,8 @@ static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
 
 	warm_cop_clean_d();
 	warm_drain_wb_inval_tlb();
+
+	spin_unlock_irqrestore(&lock, flags);
 
 	if (retval == 0 && !is_unmap) {
 		WARM_INFO("mapped %08x to %08x with %c%c bit(s) (%d section(s))\n",
@@ -625,6 +642,8 @@ static int __init warm_module_init(void)
 
 	pret->owner = THIS_MODULE;
 	pret->proc_fops = &warm_fops;
+
+	spin_lock_init(&lock);
 
 	uppermem_start = RAM_PHYS_START + (max_mapnr << PAGE_SHIFT);
 	uppermem_end = RAM_PHYS_START + RAM_MAX_SIZE;
