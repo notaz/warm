@@ -63,6 +63,10 @@ int warm_change_cb_range(int cb, int is_set, void *virt_addr, unsigned long size
 
 unsigned long warm_virt2phys(const void *ptr);
 
+int warm_mmap_section(void *virt_addr, unsigned long phys_addr,
+	unsigned long size, int cb);
+int warm_munmap_section(void *virt_addr, unsigned long size);
+
 void warm_finish(void);
 
 #ifdef __cplusplus
@@ -91,9 +95,19 @@ struct warm_change_cb
 	int is_set;	/* set (1) or clear (0) */
 };
 
+struct warm_map_op
+{
+	unsigned long virt_addr;
+	unsigned long phys_addr;
+	unsigned long size;
+	int cb;
+	int is_unmap;
+};
+
 #define WARMC_CACHE_OP	_IOW(WARM_IOCTL_BASE,  0, struct warm_cache_op)
 #define WARMC_CHANGE_CB	_IOW(WARM_IOCTL_BASE,  1, struct warm_change_cb)
 #define WARMC_VIRT2PHYS	_IOWR(WARM_IOCTL_BASE, 2, unsigned long)
+#define WARMC_MMAP	_IOW(WARM_IOCTL_BASE,  3, struct warm_map_op)
 
 #endif /* WARM_CODE */
 #endif /* !__ASSEMBLER__ */

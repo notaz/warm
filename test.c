@@ -11,6 +11,12 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <linux/fb.h>
 
 #if 1
 #include "warm.h"
@@ -24,8 +30,10 @@
 typedef unsigned long long u64;
 static u64 start_time, end_time;
 
-static unsigned char buff[8 * 1024 * 1024] __attribute__((aligned(32)));
-static unsigned char *buff_mid = &buff[8 * 1024 * 1024 / 2];
+static unsigned char buff[2 * 1024 * 1024] __attribute__((aligned(32)));
+static unsigned char *buff_mid = &buff[sizeof(buff) / 2];
+
+#define REP 32
 
 static u64 xtime(void)
 {
@@ -71,6 +79,18 @@ static void word_fill(void)
 		*p++ = 0;
 }
 
+static void cached_byte_fill(void)
+{
+	char *p = (void *)buff;
+	int i, j, v;
+
+	for (i = sizeof(buff) / 32; i > 0; i--) {
+		v += *p;
+		for (j = 32; j > 0; j--)
+			*p++ = v;
+	}
+}
+
 static void do_memcpy(void)
 {
 	memcpy(buff, buff_mid, sizeof(buff) / 2);
@@ -105,38 +125,94 @@ static void word_inc(void)
 	}
 }
 
+#define TEST_PAGE 4096
+
+static void page_writes_ref(void *buf)
+{
+	long *d = buf;
+	int i, j;
+
+	for (j = 0; j < 0x100000 / TEST_PAGE; j++)
+		for (i = 0; i < TEST_PAGE / 4; i++)
+			d[j * TEST_PAGE / 4 + i] = 0;
+}
+
+static void page_inc_ref(void *buf)
+{
+	long *d = buf;
+	int i, j;
+
+	for (j = 0; j < 0x100000 / TEST_PAGE; j++)
+		for (i = 0; i < TEST_PAGE / 4; i++)
+			d[j * TEST_PAGE / 4 + i]++;
+}
+
+static void page_writes(void *buf)
+{
+	long *d = buf;
+	int i, j;
+
+	for (i = 0; i < TEST_PAGE / 4; i++)
+		for (j = 0; j < 0x100000 / TEST_PAGE; j++)
+			d[j * TEST_PAGE / 4 + i] = 0;
+}
+
+static void page_inc(void *buf)
+{
+	long *d = buf;
+	int i, j;
+
+	for (i = 0; i < TEST_PAGE / 4; i++)
+		for (j = 0; j < 0x100000 / TEST_PAGE; j++)
+			d[j * TEST_PAGE / 4 + i]++;
+}
+
 #define ONE_TEST(count, func) \
 	test_start(); \
 	for (i = count; i > 0; i--) \
-		func(); \
+		func; \
 	test_end()
 
 static void tests(void)
 {
 	int i;
 
-	ONE_TEST(64, do_memset);
-	show_result("memset", sizeof(buff) * 64);
+	ONE_TEST(REP, do_memset());
+	show_result("memset", sizeof(buff) * REP);
 
-	ONE_TEST(64, byte_fill);
-	show_result("byte fill", sizeof(buff) * 64);
+	ONE_TEST(REP, byte_fill());
+	show_result("byte fill", sizeof(buff) * REP);
 
-	ONE_TEST(64, word_fill);
-	show_result("word fill", sizeof(buff) * 64);
+	ONE_TEST(REP, word_fill());
+	show_result("word fill", sizeof(buff) * REP);
 
-	ONE_TEST(128, do_memcpy);
-	show_result("memcpy", sizeof(buff) * 128 / 2);
+	ONE_TEST(REP, cached_byte_fill());
+	show_result("c. byte fill", sizeof(buff) * REP);
 
-	ONE_TEST(128, byte_cpy);
-	show_result("byte copy", sizeof(buff) * 128 / 2);
+	ONE_TEST(REP * 2, do_memcpy());
+	show_result("memcpy", sizeof(buff) * REP);
 
-	ONE_TEST(128, word_cpy);
-	show_result("word copy", sizeof(buff) * 128 / 2);
+	ONE_TEST(REP * 2, byte_cpy());
+	show_result("byte copy", sizeof(buff) * REP);
 
-	ONE_TEST(64, word_inc);
-	show_result("word inc", sizeof(buff) * 64);
+	ONE_TEST(REP * 2, word_cpy());
+	show_result("word copy", sizeof(buff) * REP);
+
+	ONE_TEST(REP, word_inc());
+	show_result("word inc", sizeof(buff) * REP);
 
 	usleep(200000);
+}
+
+static void page_tests(void *buf)
+{
+	int i;
+
+	ONE_TEST(REP, page_writes(buf));
+	show_result("page_writes", 0x100000 * REP);
+
+	ONE_TEST(REP, page_inc(buf));
+	show_result("page_inc", 0x100000 * REP);
 }
 
 #if 1
@@ -225,7 +301,11 @@ void coherency_test(void)
 
 int main()
 {
-	int ret;
+	struct fb_fix_screeninfo fbfix;
+	void *mmap_mem;
+	void *section_mem;
+	int fbdev;
+	int i, ret;
 
 	ret = warm_init();
 	if (ret != 0)
@@ -235,6 +315,9 @@ int main()
 	}
 
 	printf("buff: %p - %p\n", buff, buff + sizeof(buff) - 1);
+
+	// prefault
+	do_memset();
 
 	printf("-- default --\n");
 	tests();
@@ -252,9 +335,75 @@ int main()
 	warm_change_cb_range(WCB_B_BIT, 0, buff, sizeof(buff));
 	tests();
 
+	//printf("--  c b --\n");
 	warm_change_cb_range(WCB_C_BIT|WCB_B_BIT, 1, buff, sizeof(buff));
+	//tests();
+
 	coherency_test();
 
+	mmap_mem = mmap((void *)0x60000000, 0x100000, PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+	// find safe location for section map, we'll use fb
+	fbdev = open("/dev/fb0", O_RDWR);
+	if (fbdev == -1) {
+		perror("fb open");
+		goto out;
+	}
+
+	ret = ioctl(fbdev, FBIOGET_FSCREENINFO, &fbfix);
+	if (ret == -1) {
+		perror("ioctl(fbdev)");
+		goto out;
+	}
+
+	section_mem = (void *)0x70000000;
+	ret = warm_mmap_section(section_mem, fbfix.smem_start, 0x100000,
+				WCB_C_BIT|WCB_B_BIT);
+	if (ret != 0) {
+		fprintf(stderr, "section map failed\n");
+		goto out;
+	}
+
+	// prefault
+	memset(mmap_mem, 0, 0x100000);
+	memset(section_mem, 0, 0x100000);
+
+	ONE_TEST(REP, page_writes_ref(mmap_mem));
+	show_result("page_wr_ref_m", 0x100000 * REP);
+
+	ONE_TEST(REP, page_inc_ref(mmap_mem));
+	show_result("page_inc_ref_m", 0x100000 * REP);
+
+	ONE_TEST(REP, page_writes_ref(section_mem));
+	show_result("page_wr_ref_s", 0x100000 * REP);
+
+	ONE_TEST(REP, page_inc_ref(section_mem));
+	show_result("page_inc_ref_s", 0x100000 * REP);
+
+	printf("== pages ==\n");
+	page_tests(mmap_mem);
+
+	printf("== section ==\n");
+	printf("-- default --\n");
+	page_tests(section_mem);
+
+	printf("-- ncnb --\n");
+	warm_change_cb_range(WCB_C_BIT|WCB_B_BIT, 0, section_mem, 0x100000);
+	page_tests(section_mem);
+
+	printf("-- nc b --\n");
+	warm_change_cb_range(WCB_B_BIT, 1, section_mem, 0x100000);
+	page_tests(section_mem);
+
+	printf("--  cnb --\n");
+	warm_change_cb_range(WCB_C_BIT, 1, section_mem, 0x100000);
+	warm_change_cb_range(WCB_B_BIT, 0, section_mem, 0x100000);
+	page_tests(section_mem);
+
+	warm_munmap_section(section_mem, 0x100000);
+
+out:
 	warm_finish();
 
 	return 0;

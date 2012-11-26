@@ -337,6 +337,81 @@ static int do_cache_ops(int ops, u32 addr, u32 size)
 	return 0;
 }
 
+static int do_map_op(u32 vaddr, u32 paddr, u32 size, int cb, int is_unmap)
+{
+	int count = 0, retval = 0;
+	u32 pstart, start, end;
+	u32 desc1, apcb_bits;
+	u32 *pgtable;
+	u32 v, mask;
+
+	apcb_bits = (3 << 10) | (1 << 5); /* r/w, dom 1 */
+	if (cb & WCB_C_BIT)
+		apcb_bits |= 8;
+	if (cb & WCB_B_BIT)
+		apcb_bits |= 4;
+	// spinlock
+
+	mask = SECTION_SIZE - 1;
+	size = (size + mask) & ~mask;
+
+	pstart = paddr;
+	start = vaddr;
+	end = start + size;
+
+	/* check for overflows */
+	if (end - 1 < start)
+		return -EINVAL;
+	if (pstart + size - 1 < pstart)
+		return -EINVAL;
+
+	pgtable = get_pgtable();
+
+	for (; vaddr < end; vaddr += SECTION_SIZE, paddr += SECTION_SIZE)
+	{
+		desc1 = pgtable[vaddr >> 20];
+
+		if (is_unmap) {
+			if ((desc1 & 3) != 2) {
+				printk(KERN_WARNING PFX "vaddr %08x is not a section? (%08x)\n",
+						vaddr, desc1);
+				return -EINVAL;
+			}
+			v = 0;
+		} else {
+			if ((desc1 & 3) != 0) {
+				printk(KERN_WARNING PFX "vaddr %08x already mapped? (%08x)\n",
+						vaddr, desc1);
+				retval = -EINVAL;
+				break;
+			}
+			v = (paddr & ~mask) | apcb_bits | 0x12;
+		}
+
+		pgtable[vaddr >> 20] = v;
+		count++;
+	}
+
+	if (retval != 0) {
+		/* undo mappings */
+		vaddr = start;
+
+		for (; vaddr < end && count > 0; vaddr += SECTION_SIZE, count--)
+			pgtable[vaddr >> 20] = 0;
+	}
+
+	warm_cop_clean_d();
+	warm_drain_wb_inval_tlb();
+
+	if (retval == 0 && !is_unmap) {
+		WARM_INFO("mapped %08x to %08x with %c%c bit(s) (%d section(s))\n",
+			start, pstart, apcb_bits & 8 ? 'c' : ' ',
+			apcb_bits & 4 ? 'b' : ' ', count);
+	}
+
+	return retval;
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
 static long warm_ioctl(struct file *file, unsigned int cmd, unsigned long __arg)
 #else
@@ -348,6 +423,7 @@ static int warm_ioctl(struct inode *inode, struct file *file,
 	union {
 		struct warm_cache_op wcop;
 		struct warm_change_cb ccb;
+		struct warm_map_op mop;
 		unsigned long addr;
 	} u;
 	long ret;
@@ -380,6 +456,14 @@ static int warm_ioctl(struct inode *inode, struct file *file,
 		ret = do_virt2phys(&u.addr);
 		if (copy_to_user(arg, &u.addr, sizeof(u.addr)))
 			return -EFAULT;
+		break;
+	case WARMC_MMAP:
+		if (copy_from_user(&u.mop, arg, sizeof(u.mop)))
+			return -EFAULT;
+		if (u.mop.cb & ~(WCB_C_BIT|WCB_B_BIT))
+			return -EINVAL;
+		ret = do_map_op(u.mop.virt_addr, u.mop.phys_addr, u.mop.size,
+			u.mop.cb, u.mop.is_unmap);
 		break;
 	default:
 		ret = -ENOTTY;

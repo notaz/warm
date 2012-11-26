@@ -205,7 +205,7 @@ int warm_cache_op_range(int op, void *addr, unsigned long size)
 
 	ret = ioctl(warm_fd, WARMC_CACHE_OP, &wop);
 	if (ret != 0) {
-		perror("WARMC_CACHE_OP failed");
+		perror(PFX "WARMC_CACHE_OP failed");
 		return -1;
 	}
 
@@ -232,7 +232,7 @@ int warm_change_cb_range(int cb, int is_set, void *addr, unsigned long size)
 
 	ret = ioctl(warm_fd, WARMC_CHANGE_CB, &ccb);
 	if (ret != 0) {
-		perror("WARMC_CHANGE_CB failed");
+		perror(PFX "WARMC_CHANGE_CB failed");
 		return -1;
 	}
 
@@ -252,10 +252,55 @@ unsigned long warm_virt2phys(const void *ptr)
 	ptrio = (unsigned long)ptr;
 	ret = ioctl(warm_fd, WARMC_VIRT2PHYS, &ptrio);
 	if (ret != 0) {
-		perror("WARMC_VIRT2PHYS failed");
+		perror(PFX "WARMC_VIRT2PHYS failed");
 		return (unsigned long)-1;
 	}
 
 	return ptrio;
 }
 
+int warm_do_section(void *virt_addr, unsigned long phys_addr,
+	unsigned long size, int cb, int is_unmap)
+{
+	struct warm_map_op mop;
+	unsigned long vaddr;
+	int ret;
+
+	if (warm_fd < 0)
+		return -1;
+
+	vaddr = (unsigned long)virt_addr;
+	if (vaddr & 0xfffff) {
+		fprintf(stderr, PFX "virt_addr is unaligned\n");
+		return -1;
+	}
+	if (phys_addr & 0xfffff) {
+		fprintf(stderr, PFX "phys_addr is unaligned\n");
+		return -1;
+	}
+
+	mop.virt_addr = vaddr;
+	mop.phys_addr = phys_addr;
+	mop.size = size;
+	mop.cb = cb;
+	mop.is_unmap = is_unmap;
+
+	ret = ioctl(warm_fd, WARMC_MMAP, &mop);
+	if (ret != 0) {
+		perror(PFX "WARMC_MMAP failed");
+		return -1;
+	}
+
+	return 0;
+}
+
+int warm_mmap_section(void *virt_addr, unsigned long phys_addr,
+	unsigned long size, int cb)
+{
+	return warm_do_section(virt_addr, phys_addr, size, cb, 0);
+}
+
+int warm_munmap_section(void *virt_addr, unsigned long size)
+{
+	return warm_do_section(virt_addr, 0, size, 0, 1);
+}
