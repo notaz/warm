@@ -42,6 +42,7 @@
 	if (verbose) \
 		pr_info(PFX fmt, ##__VA_ARGS__)
 
+#define SECTION_SIZE		0x100000
 #define MAX_CACHEOP_RANGE	16384
 
 /* assume RAM starts at phys addr 0 (this is really machine specific) */
@@ -146,8 +147,8 @@ static int do_set_cb_uppermem(int in_cb, int is_set)
 static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 {
 	int count = 0, bits = 0;
-	u32 desc1, desc2;
-	u32 *pgtable, *cpt;
+	u32 desc1, desc2 = 0;
+	u32 *pgtable, *cpt = NULL;
 	u32 start, end;
 	u32 mask;
 
@@ -166,20 +167,39 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 
 	pgtable = get_pgtable();
 
-	for (; addr < end; addr += PAGE_SIZE)
+	while (addr < end)
 	{
 		desc1 = pgtable[addr >> 20];
 
-		if ((desc1 & 3) != 1) {
-			printk(KERN_WARNING PFX "not coarse table? %08x %08x\n", desc1, addr);
+		switch (desc1 & 3) {
+		case 0:
+			printk(KERN_WARNING PFX "address %08x not mapped.\n", addr);
 			return -EINVAL;
+		case 1:
+			/* coarse table */
+			cpt = __va(desc1 & 0xfffffc00);
+			desc2 = cpt[(addr >> 12) & 0xff];
+			break;
+		case 2:
+			/* section */
+			if (is_set)
+				desc1 |= bits;
+			else
+				desc1 &= ~bits;
+			pgtable[addr >> 20] = desc1;
+			addr += SECTION_SIZE;
+			count++;
+			continue;
+		case 3:
+			cpt = __va(desc1 & 0xfffff000);
+			desc2 = cpt[(addr >> 10) & 0x3ff];
+			break;
 		}
 
-		cpt = __va(desc1 & 0xfffffc00);
-		desc2 = cpt[(addr >> 12) & 0xff];
 		
-		if ((desc2 & 3) != 2) {
-			printk(KERN_WARNING PFX "not small page? %08x %08x\n", desc2, addr);
+		if ((desc2 & 3) == 0) {
+			printk(KERN_WARNING PFX "address %08x not mapped (%08x)\n",
+				addr, desc2);
 			return -EINVAL;
 		}
 
@@ -187,9 +207,23 @@ static int do_set_cb_virt(int in_cb, int is_set, u32 addr, u32 size)
 			desc2 |= bits;
 		else
 			desc2 &= ~bits;
-		desc2 |= 0xff0;
 
-		cpt[(addr >> 12) & 0xff] = desc2;
+		/* this might be bad idea, better let it fault so that Linux does
+		 * it's accounting, but that will drop CB bits, so keep this
+		 * for compatibility */
+		if ((desc2 & 3) == 2)
+			desc2 |= 0xff0;
+
+		switch (desc1 & 3) {
+		case 1:
+			cpt[(addr >> 12) & 0xff] = desc2;
+			break;
+		case 3:
+			cpt[(addr >> 10) & 0x3ff] = desc2;
+			break;
+		}
+
+		addr += PAGE_SIZE;
 		count++;
 	}
 
@@ -227,8 +261,7 @@ static int do_virt2phys(unsigned long *_addr)
 	default:
 		return -EINVAL;
 	}
-	
-	
+
 	switch (desc2 & 3) {
 	case 1:	/* large page */
 		*_addr = (desc2 & ~0xffff) | (addr & 0xffff);
